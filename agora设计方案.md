@@ -1,12 +1,12 @@
 # Agora 设计方案
 
-> 本文是 Agora 的 Python 实施设计，不是 Java 源码的逐类翻译。设计依据为 `C:\Users\asta1\ai-project\open-agent` 当前源码及 Java 原版的真实业务边界。Agora 是独立重构/验证项目，不能把 Java 版本的生产流量、指标或运行事实直接归因到 Agora。
+> 本文是 Agora 的 Python 实施设计，不是 Java 源码的逐类翻译。设计依据为 `C:\Users\asta1\ai-project\open-agent` 的服务端语义和前端契约，以及 `C:\Users\asta1\ai-project\hermes-agent` 的 Python Agent Runtime 设计。Agora 是独立重构/验证项目，不能把参考项目的生产流量、指标或运行事实直接归因到 Agora。
 
 ## 1. 目标与边界
 
 ### 1.1 目标
 
-构建一个面向云端、多用户部署的 Agent Assistant Runtime，复用 OpenAgent 前端的交互方式，支持：
+构建一个面向云端、多用户部署的 Agent Assistant Runtime，直接复用 `frontend/` 中的 OpenAgent 页面和交互，支持：
 
 - 多 Agent 配置与会话管理；
 - OpenAI-compatible 模型调用、流式输出和标准 tool call；
@@ -82,13 +82,44 @@ src/agora/
 │  ├─ memory.py
 │  └─ skills.py
 ├─ api/
-│  ├─ chat.py            # stream/history/sessions/steer/cancel
+│  ├─ chat.py            # 前端命令/查询到 Runtime command 的映射
 │  ├─ agents.py
-│  └─ schemas.py
+│  ├─ auth.py
+│  └─ schemas.py         # Agora API DTO；不暴露领域对象
+├─ web/
+│  └─ static.py          # frontend 静态资源与动态路由 fallback
 └─ main.py               # FastAPI 装配
+
+frontend/
+├─ src/app/              # 直接复用的 OpenAgent 页面
+├─ src/components/       # 直接复用的交互组件
+└─ src/lib/api.ts        # 唯一前端 API 适配点
 ```
 
-### 3.1 外部接口（稳定 seam）
+### 3.1 前端复用与契约边界
+
+`frontend/` 是已复制的 OpenAgent Next.js 前端，不重写页面、路由和聊天交互。Agora 不承诺兼容 OpenAgent 后端、数据库或内部 Java 接口；“兼容”只表示当前前端可以调用 Agora。
+
+边界如下：
+
+```text
+OpenAgent 页面组件
+  -> frontend/src/lib/api.ts（请求与 UI DTO 适配）
+  -> Agora HTTP/SSE API
+  -> Agora domain/runtime（原生模型与状态机）
+```
+
+- `domain`、`runtime`、`ports` 不依赖 OpenAgent DTO、URL 或前端组件；
+- 第一阶段可保留现有 `/api/chat/*` 路径，减少接入改动，但它们是 Agora 的前端适配契约，不是遗留兼容层；
+- 未来若启用 `/api/v1/*`，只修改 `frontend/src/lib/api.ts` 的请求与响应映射，不重写 `chat-screen.tsx` 或业务页面；
+- 返回数据可在适配层投影为前端需要的 `ChatHistoryMessage`、`ChatStreamEvent` 等 UI DTO，不能让持久化表或领域对象反向迁就页面字段；
+- Hermes 只作为 Runtime 参考：借鉴其 Context Engine、provider/tool adapter、memory/skill 边界、稳定上下文与容错策略；不复制其 Vite Web、CLI/gateway 进程模型或单机全局状态。
+
+前端使用 Next 静态导出，且 Agent 与会话路径包含动态参数。FastAPI 在生产环境提供构建产物时，必须为 `/agents/{agent_id}/...` 等浏览器刷新路径提供与前端路由匹配的 fallback；M1 要覆盖深链接直接打开和刷新测试。
+
+前端已有 channels、plugins、MCP、cron、project runtime、sandbox 等页面。第一阶段不实现的能力由 `GET /api/status` 的 `capabilities` 字段显式关闭并隐藏入口；直接访问时返回稳定的 `404/501` 错误，不为“页面存在”而提前实现后端能力。
+
+### 3.2 外部接口（稳定 seam）
 
 #### `AgentLoop.run(command, sink) -> RunResult`
 
@@ -106,9 +137,9 @@ src/agora/
 
 工具总是返回结构化结果；参数错误、路径违规、超时和执行异常都映射为稳定错误码，不把宿主机异常直接抛给 Agent loop。
 
-#### `EventPublisher.publish(session, event) -> seq`
+#### `EventPublisher.publish_persistent(session, event) -> seq`
 
-持久化事件先分配 `seq`，成功后广播；瞬时增量使用 `seq=-1`。SSE 只依赖事件接口，不直接读取运行内部状态。
+持久化事件先分配 `seq`，成功后广播。`publish_transient(session, event)` 专门发送瞬时事件，使用 `seq=-1` 且不得写入事件表。SSE 只依赖事件接口，不直接读取运行内部状态。
 
 ## 4. Java 到 Python 的映射
 
@@ -169,15 +200,22 @@ CREATED
 
 ## 7. API 与 SSE 契约
 
-复用前端所需的核心路径，后端实现不需要兼容 Java 的内部接口：
+API 的目标是服务已复用的前端，不是兼容 OpenAgent 后端。第一阶段保留前端正在调用的路径和事件语义；以后由 `frontend/src/lib/api.ts` 集中迁移路径和 DTO。
+
+认证、状态与聊天的最小前端契约为：
+
+- `GET /api/status`：初始化状态、运行状态与 capability flags；
+- `POST /api/login`、`POST /api/logout`、`GET /api/me`：浏览器登录态和当前用户；
+- `GET/POST/PATCH /api/agents`：第一阶段的最小 Agent 配置；
+- `GET /api/tools`：展示已注册工具。
+
+聊天核心路径为：
 
 - `POST /api/chat/stream`：写入 user message，返回本回合 SSE；
 - `GET /api/chat/subscribe?agentId=&sessionId=&since=`：事件回放与长连接订阅；
 - `GET /api/chat/history`、`GET /api/chat/sessions`；
 - `POST /api/chat/steer`：运行中插话，消息进入当前 run 的 steer queue；
 - `DELETE /api/runs/{runId}`：显式取消；
-- `GET/POST/PATCH /api/agents`：第一阶段的最小 Agent 配置；
-- `GET /api/tools`：展示已注册工具。
 
 事件统一为：
 
@@ -185,7 +223,7 @@ CREATED
 {"seq": 12, "type": "tool_call", "data": {"id": "call_1", "name": "read_file", "arguments": "{...}"}}
 ```
 
-`content_delta` 和 `reasoning_delta` 不落库；`content`、`tool_call`、`tool_result`、`error`、`done` 先写库后广播。SSE 写失败只注销订阅，不取消运行。
+前端同时消费本回合 `POST /api/chat/stream` 和长连接 `/api/chat/subscribe`，因此持久化事件必须用会话内单调 `seq` 去重。`content_delta` 不落库并固定 `seq=-1`；`content`、`tool_call`、`tool_result`、`steer`、`error`、`done` 先写库后广播。`subagent_progress` 为后续可选瞬时事件。SSE 写失败只注销订阅，不取消运行。
 
 ## 8. 工具和安全基线
 
@@ -196,6 +234,47 @@ CREATED
 3. `web_search`、`web_fetch`；
 4. `memory_search`、`load_skill`；
 5. `exec` 只在 Docker sandbox 可用且显式开启时提供。
+
+### 8.1 文件工具行为
+
+文件工具采用“OpenAgent 安全边界 + Hermes 读取体验”的组合。所有文件工具先经过
+`WorkspacePathResolver`，再进入具体实现；工具实现不能自行解析宿主机路径。
+
+`read_file` 使用结构化结果，不把大段原文作为唯一返回值：
+
+```json
+{
+  "path": "src/main.py",
+  "content": "1|from fastapi import FastAPI\n2|...",
+  "offset": 1,
+  "limit": 500,
+  "total_lines": 800,
+  "truncated": true,
+  "next_offset": 241,
+  "sha256": "..."
+}
+```
+
+具体规则：
+
+- 支持 `offset`（从 1 开始）和 `limit` 分页，默认值和最大值由策略配置限制；
+- 返回内容带稳定行号，便于后续 `edit_file`、`apply_patch` 和错误定位；
+- 同时限制行数和最终字符数，超限时按完整行截断并返回 `next_offset`，不因为大文件直接把上下文撑爆；
+- 普通二进制文件拒绝按文本读取；可解析的 `.docx`、`.xlsx`、`.ipynb` 等文档通过独立提取 adapter 读取；
+- 读取前检查敏感路径，读取后对 API key、token、密码等内容执行统一脱敏；敏感文件拒绝规则和脱敏规则都必须覆盖工具结果、日志和持久化记录；
+- 按 `resolved_path + offset + limit + size + mtime + sha256` 记录本次读取。文件未变化时重复读取返回 `unchanged` 摘要而不重复发送全文，连续重复达到阈值后返回稳定的 loop guard 错误；文件变化后自动解除抑制；
+- 内容预算按实际进入模型的、带行号且已脱敏的字符数计算。
+
+`write_file` 和 `edit_file` 采用版本保护：
+
+- 新建文件不要求版本指纹；
+- 覆盖已有文件必须携带上一次 `read_file` 返回的 `expected_sha256`；当前文件哈希不一致时拒绝覆盖并要求重新读取；
+- `append` 可以不带 `expected_sha256`，但仍受大小和权限限制；
+- 写入应使用临时文件加原子替换，避免进程中断留下半个文件；
+- `edit_file` 默认精确匹配且要求唯一命中，失败时返回重新读取和增加上下文的提示；模糊匹配不作为第一阶段默认行为。
+
+`apply_patch` 使用两阶段执行：先解析所有文件、校验所有路径和 hunk 锚点，再统一写入；任一文件失败时整个 patch 不产生修改。多文件 patch 的访问范围交给
+`ToolAccessResolver`，并声明为 `WORKSPACE_EXCLUSIVE` 或对应文件集合。
 
 文件工具必须经过统一的 `WorkspacePathResolver`：
 
@@ -213,7 +292,8 @@ CREATED
 
 - FastAPI、配置、依赖注入和健康检查；
 - 领域模型、端口接口、fake LLM、fake tool；
-- 事件 JSON schema 和最小前端适配；
+- `frontend/src/lib/api.ts` 的接口清单、事件 JSON schema 和最小前端适配；
+- `/api/status`、`/api/me`、最小登录态和 capability flags；
 - 单元测试先覆盖 `AgentLoop` 的 text/tool/失败/终态。
 
 ### M1：单进程可用链路
@@ -223,8 +303,9 @@ CREATED
 - `RunCoordinator` 的会话 FIFO、全局 semaphore、超时和取消；
 - `read_file`、`list_dir`、`write_file`；
 - `/api/chat/stream`、history、subscribe、cancel。
+- 静态前端构建产物托管，以及 Agent/session 深链接 fallback。
 
-验收：同一会话连续提交按 FIFO 执行；模型断开或工具异常仍收到 `error + done`；SSE 断开重连不会重复持久化事件。
+验收：同一会话连续提交按 FIFO 执行；模型断开或工具异常仍收到 `error + done`；SSE 断开重连不会重复持久化事件；浏览器在会话 URL 刷新后能恢复历史和进行中的 run。
 
 ### M2：可解释的 Agent Runtime
 
@@ -253,4 +334,4 @@ CREATED
 - 不把 Java 的生产指标写成 Python 的运行结果；Python 版的性能只能通过本地压测和可复现实验说明。
 - 不把文件读取工具称为 RAG。Agora 的会话记忆是文件/关键词检索；文档 chunk、embedding、向量检索和 rerank 放在独立 Ragent 项目。
 - 第一阶段只保留一个真正有深度的 `AgentLoop` 和一个真正有深度的 `RunCoordinator` 接口，外围 adapter 可替换、可 fake，保证测试围绕接口而不是穿透实现。
-- Python 版不需要 Java 兼容层。前端依赖的是 HTTP/SSE 数据契约，后端可以直接按 Python 的异步模型重新实现。
+- Python 版不需要 Java 或 OpenAgent 后端兼容层。前端依赖的是当前页面所需的 HTTP/SSE 语义，Agora 通过集中适配层满足该语义，后端仍按 Python 异步模型和原生领域模型实现。

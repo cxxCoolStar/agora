@@ -1,1 +1,4 @@
 /.idea/
+/.agora/
+/.pytest_tmp/
+__pycache__/

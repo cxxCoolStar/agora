@@ -12,10 +12,10 @@ const ThemeContext = createContext<{
   toggleTheme: () => void;
   resolvedTheme: "dark" | "light";
 }>({
-  theme: "dark",
+  theme: "light",
   setTheme: () => {},
   toggleTheme: () => {},
-  resolvedTheme: "dark",
+  resolvedTheme: "light",
 });
 
 export function useTheme() {
@@ -23,7 +23,7 @@ export function useTheme() {
 }
 
 function readSystem(): "dark" | "light" {
-  if (typeof window === "undefined") return "dark";
+  if (typeof window === "undefined") return "light";
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
@@ -32,8 +32,8 @@ function apply(resolved: "dark" | "light") {
 }
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>("dark");
-  const [resolvedTheme, setResolvedTheme] = useState<"dark" | "light">("dark");
+  const [theme, setThemeState] = useState<Theme>("light");
+  const [resolvedTheme, setResolvedTheme] = useState<"dark" | "light">("light");
 
   useEffect(() => {
     // Hydrate from localStorage once on mount. setState here is
@@ -41,7 +41,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     // useState lazy initializer would crash SSR) and we want a single
     // shift to the persisted theme on first paint.
     const stored = localStorage.getItem(STORAGE_KEY) as Theme | null;
-    const initial: Theme = stored === "light" || stored === "dark" || stored === "system" ? stored : "dark";
+    const initial: Theme = stored === "light" || stored === "dark" || stored === "system" ? stored : "light";
     setThemeState(initial);
     const resolved = initial === "system" ? readSystem() : initial;
     setResolvedTheme(resolved);
