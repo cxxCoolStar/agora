@@ -122,7 +122,7 @@ CREATED -> QUEUED -> RUNNING -> MODEL_CALL
 
 规则：每轮检查取消、deadline、预算；工具异常转换为可回灌的结构化失败结果；所有终态持久化并发送唯一 `done`。同一会话 FIFO，跨会话由全局并发 semaphore/queue 控制。
 
-Hermes 的 loop guard 检测重复 `(tool, arguments_hash)`、连续失败和无进展文本；达到硬阈值时停止工具并执行一次无工具最终合成。最终合成失败返回明确的失败状态，不能伪造成功。
+Hermes 风格的 loop guard 在每次 `AgentRun` 内追踪规范化 `(tool, arguments_hash)`：相同参数的连续失败默认第 2 次警告，启用 hard stop 后记录第 5 次失败并在下一次相同调用前阻断；同一工具连续失败默认第 3 次警告、第 8 次失败后 halt；`list_dir/read_file/search_files/web_*` 等幂等工具，相同参数且相同结果默认第 2 次警告、第 5 次结果后阻断下一次调用。连续、相同调用且相同的大结果从第 2 次起替换为前序结果引用，第 3 次起附加改变策略的提示；`process`、`*_poll`、`*_get_result` 等轮询工具不触发重复调用提示。`web_search` 和 `delegate_task` 有独立的每次运行硬上限（默认各 50）。当前 M1 另设最多 12 个模型工具轮次，达到轮次或 hard stop 后停止继续调用工具并执行一次无工具最终合成。最终合成失败返回明确的失败状态，不能伪造成功。
 
 ### 5.3 Context Engine
 

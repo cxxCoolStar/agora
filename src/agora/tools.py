@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,68 @@ class WorkspaceTools:
         self.root = root.resolve()
         self.max_lines = max_lines
         self.max_chars = max_chars
+
+    @staticmethod
+    def definitions() -> list[dict[str, Any]]:
+        return [
+            {
+                "type": "function",
+                "name": "list_dir",
+                "description": "List files and directories under a relative workspace path.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "default": "."},
+                        "offset": {"type": "integer", "minimum": 0, "default": 0},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "read_file",
+                "description": "Read a UTF-8 workspace file with stable line numbers and pagination.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "offset": {"type": "integer", "minimum": 1, "default": 1},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+                    },
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "write_file",
+                "description": "Create or update a workspace file. Existing files require expected_sha256 from read_file unless append is true.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"},
+                        "expected_sha256": {"type": "string"},
+                        "append": {"type": "boolean", "default": False},
+                    },
+                    "required": ["path", "content"],
+                    "additionalProperties": False,
+                },
+            },
+        ]
+
+    def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(arguments, dict):
+            raise ToolError("tool arguments must be an object")
+        methods = {"list_dir": self.list_dir, "read_file": self.read_file, "write_file": self.write_file}
+        method = methods.get(name)
+        if method is None:
+            raise ToolError(f"tool is not available: {name}")
+        try:
+            return method(**arguments)
+        except TypeError as exc:
+            raise ToolError(f"invalid arguments for {name}: {exc}") from exc
 
     def resolve(self, path: str, *, allow_missing: bool = False) -> Path:
         candidate = Path(path)

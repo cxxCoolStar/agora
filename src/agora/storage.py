@@ -73,6 +73,18 @@ class Store:
             self.connection.commit()
             return {"type": event_type, "seq": cursor.lastrowid, "data": data}
 
+    async def start_tool_execution(self, execution_id: str, run_id: str, name: str, arguments: str, now: str) -> None:
+        await self.transact(
+            "INSERT INTO tool_executions(id,run_id,name,arguments,state,created_at) VALUES(?,?,?,?,?,?)",
+            (execution_id, run_id, name, arguments, "running", now),
+        )
+
+    async def finish_tool_execution(self, execution_id: str, result: str, state: str, now: str) -> None:
+        await self.transact(
+            "UPDATE tool_executions SET result=?,state=?,finished_at=? WHERE id=?",
+            (result, state, now, execution_id),
+        )
+
     async def events_since(self, agent_id: str, session_id: str, since: int) -> list[dict]:
         rows = await self.fetchall(
             "SELECT seq,type,data FROM session_events WHERE agent_id=? AND session_id=? AND seq>? ORDER BY seq",
