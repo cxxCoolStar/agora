@@ -6,6 +6,7 @@ from collections import defaultdict
 from datetime import UTC, datetime
 
 from .events import EventBus
+from .provider import LLMProvider
 from .storage import Store
 from .tools import WorkspaceTools
 
@@ -15,9 +16,9 @@ def now() -> str:
 
 
 class AgentLoop:
-    """Provider-neutral loop. M0 uses deterministic local output until a model adapter is configured."""
-    def __init__(self, store: Store, events: EventBus, tools: WorkspaceTools) -> None:
-        self.store, self.events, self.tools = store, events, tools
+    """FIFO agent loop backed by an injected real model provider."""
+    def __init__(self, store: Store, events: EventBus, tools: WorkspaceTools, provider: LLMProvider) -> None:
+        self.store, self.events, self.tools, self.provider = store, events, tools, provider
         self.queues: dict[tuple[str, str], asyncio.Queue] = defaultdict(asyncio.Queue)
         self.active: dict[str, asyncio.Task] = {}
         self.worker_started: set[tuple[str, str]] = set()
@@ -46,6 +47,10 @@ class AgentLoop:
                 await self.events.publish(*key, "error", {"message": "run cancelled"}, now())
                 await self.events.publish(*key, "done", {"runId": run_id, "state": "cancelled"}, now())
                 await self.store.transact("UPDATE runs SET state='cancelled',finished_at=? WHERE id=?", (now(), run_id))
+            except Exception as exc:
+                await self.events.publish(*key, "error", {"message": str(exc)}, now())
+                await self.events.publish(*key, "done", {"runId": run_id, "state": "failed"}, now())
+                await self.store.transact("UPDATE runs SET state='failed',finished_at=? WHERE id=?", (now(), run_id))
             finally:
                 self.active.pop(run_id, None)
                 queue.task_done()
@@ -60,7 +65,11 @@ class AgentLoop:
 
     async def _run(self, run_id: str, agent_id: str, session_id: str, message: str) -> None:
         await self.store.transact("UPDATE runs SET state='running' WHERE id=?", (run_id,))
-        response = self._response(message)
+        history = await self.store.history(agent_id, session_id)
+        response = await self.provider.complete([
+            {"role": "system", "content": "You are Agora, a helpful AI agent."},
+            *[{"role": item["role"], "content": item["content"] or ""} for item in history],
+        ])
         for word in response.split(" "):
             await self._transient(agent_id, session_id, word + " ")
             await asyncio.sleep(0)
@@ -76,10 +85,6 @@ class AgentLoop:
         event = {"type": "content_delta", "seq": -1, "data": {"delta": delta}}
         for queue in queues:
             queue.put_nowait(event)
-
-    @staticmethod
-    def _response(message: str) -> str:
-        return f"Agora received: {message}"
 
     async def cancel(self, run_id: str) -> bool:
         task = self.active.get(run_id)

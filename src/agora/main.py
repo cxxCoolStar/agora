@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from .events import EventBus
 from .config import DEFAULT_MODEL
+from .provider import CodexProvider
 from .runtime import AgentLoop, now
 from .storage import Store
 from .tools import ToolError, WorkspaceTools
@@ -44,12 +45,13 @@ class FrontendFiles(StaticFiles):
         return FileResponse(Path(self.directory) / "index.html")
 
 
-def create_app(data_dir: Path | None = None, workspace: Path | None = None) -> FastAPI:
+def create_app(data_dir: Path | None = None, workspace: Path | None = None, provider=None) -> FastAPI:
     data_dir = data_dir or Path(os.getenv("AGORA_DATA_DIR", ".agora"))
     workspace = workspace or Path(os.getenv("AGORA_WORKSPACE", "."))
     store = Store(data_dir / "agora.sqlite3")
     bus = EventBus(store)
-    loop = AgentLoop(store, bus, WorkspaceTools(workspace))
+    provider = provider or CodexProvider()
+    loop = AgentLoop(store, bus, WorkspaceTools(workspace), provider)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -70,7 +72,7 @@ def create_app(data_dir: Path | None = None, workspace: Path | None = None) -> F
             "uptime": "0s",
             "agents": [{"id": "default", "name": "Agora", "model": DEFAULT_MODEL}],
             "channels": [],
-            "provider": {"configured": False},
+            "provider": {"configured": bool(getattr(provider, "configured", True)), "model": getattr(provider, "model", DEFAULT_MODEL)},
             "capabilities": {
                 "channels": False, "plugins": False, "projectRuntime": False,
                 "multiPod": False, "dockerSandbox": False, "mcp": False, "cron": False,
