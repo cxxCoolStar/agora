@@ -169,7 +169,7 @@ Gateway 只做认证、授权、DTO 映射、限流和事件传输。前端继�
 
 核心表：`users`、`agents`、`providers`、`configs`、`skills`、`memories`、`memory_review_runs`、`sessions`、`session_messages`、`session_events`、`agent_runs`、`tool_executions`、`api_keys`。SQLite 是默认实现，Repository 不向上层暴露 SQL；PostgreSQL 和 Redis 只替换 adapter。
 
-Workspace 负责相对路径、symlink escape、大小/时间限制、原子写入和版本校验。`read_file` 采用 offset/limit、稳定行号、完整行字符截断、`next_offset`、sha256、敏感内容脱敏和重复读取抑制；`write_file/edit_file/apply_patch` 使用 `expected_sha256` 和两阶段校验。`exec` 只能通过 Sandbox，禁止无沙箱时静默执行宿主命令。
+Workspace 负责相对路径、symlink escape、大小/时间限制、原子写入和版本校验。`read_file` 采用 offset/limit、稳定行号、完整行字符截断、`next_offset`、sha256、敏感内容脱敏和重复读取抑制；Hermes 风格 `patch` 提供 `replace` 与 V4A 多文件 `patch` 两种模式，使用 `expected_sha256`、模糊匹配和全量预校验后提交，失败时不产生部分修改；`write_file` 仅用于完整文件重写。`exec` 只能通过 Sandbox，禁止无沙箱时静默执行宿主命令。
 
 Sandbox 由 per-user/agent/session executor pool 管理。Docker 为本地默认，E2B 为云端 adapter；hydrate/sync 负责工作区与远程沙箱同步，运行时不把沙箱实现泄漏到 Agent loop。
 
@@ -181,7 +181,7 @@ Sandbox 由 per-user/agent/session executor pool 管理。Docker 为本地默认
 
 ### M1：Hermes Agent 可用链路
 
-实现 Context Engine、Responses/Chat provider、Agent loop、工具注册和 `list_dir/read_file/write_file/edit_file`；完成会话 FIFO、取消、预算、事件持久化和 SSE 恢复。验收以真实 `gpt-5.6-luna` 请求为准，不允许 mock 成功。
+实现 Context Engine、Responses/Chat provider、Agent loop、工具注册和 Hermes 风格 `list_dir/read_file/write_file/patch/search_files`；完成会话 FIFO、取消、预算、事件持久化和 SSE 恢复。验收以真实 `gpt-5.6-luna` 请求为准，不允许 mock 成功。
 
 ### M2：平台能力
 

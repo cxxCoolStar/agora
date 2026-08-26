@@ -6,6 +6,7 @@ from typing import Any, Protocol
 
 import httpx
 import json
+import os
 
 from .config import load_provider_config
 
@@ -41,13 +42,18 @@ class LLMProvider(Protocol):
 class CodexProvider:
     """OpenAI Responses-wire provider backed by the local .codex configuration."""
 
-    def __init__(self, config: dict[str, str | None] | None = None, timeout: float = 120.0) -> None:
+    def __init__(self, config: dict[str, str | None] | None = None, timeout: float | None = None) -> None:
         settings = config or load_provider_config()
         self.base_url = (settings.get("base_url") or "").rstrip("/")
         self.api_key = settings.get("api_key") or ""
         self.model = settings.get("model") or "gpt-5.6-luna"
         self.provider = settings.get("provider")
-        self.timeout = timeout
+        configured_timeout = os.getenv("AGORA_LLM_TIMEOUT", "45")
+        try:
+            default_timeout = max(5.0, float(configured_timeout))
+        except ValueError:
+            default_timeout = 45.0
+        self.timeout = timeout if timeout is not None else default_timeout
 
     @property
     def configured(self) -> bool:

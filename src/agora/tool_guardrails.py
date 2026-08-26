@@ -14,7 +14,7 @@ from typing import Any, Mapping
 
 
 IDEMPOTENT_TOOLS = frozenset({"list_dir", "read_file", "search_files", "web_search", "web_fetch"})
-MUTATING_TOOLS = frozenset({"write_file", "edit_file", "apply_patch", "exec", "delegate_task"})
+MUTATING_TOOLS = frozenset({"write_file", "patch", "exec", "delegate_task"})
 REPEATABLE_TOOLS = frozenset({"process"})
 REPEATABLE_SUFFIXES = ("_poll", "_get_result")
 

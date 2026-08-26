@@ -71,7 +71,7 @@ def test_responses_tool_call_executes_and_returns_final_answer(tmp_path: Path):
         async def complete_with_tools(self, messages, tools):
             self.requests.append((messages, tools))
             if len(self.requests) == 1:
-                assert {tool["name"] for tool in tools} == {"list_dir", "read_file", "write_file"}
+                assert {tool["name"] for tool in tools} == {"list_dir", "read_file", "write_file", "patch", "search_files"}
                 return ModelResponse(
                     text="",
                     tool_calls=(ToolCall("call-1", "read_file", '{"path":"notes.txt"}'),),
