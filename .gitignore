@@ -2,3 +2,4 @@
 /.agora/
 /.pytest_tmp/
 __pycache__/
+/.env

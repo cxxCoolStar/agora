@@ -16,7 +16,9 @@ from .config import DEFAULT_MODEL
 from .provider import CodexProvider
 from .runtime import AgentLoop, now
 from .storage import Store
+from .tool_registry import ToolRegistry
 from .tools import ToolError, WorkspaceTools
+from .web_search import WebSearchService, load_web_search_service
 
 
 class ChatRequest(BaseModel):
@@ -45,13 +47,20 @@ class FrontendFiles(StaticFiles):
         return FileResponse(Path(self.directory) / "index.html")
 
 
-def create_app(data_dir: Path | None = None, workspace: Path | None = None, provider=None) -> FastAPI:
+def create_app(
+    data_dir: Path | None = None,
+    workspace: Path | None = None,
+    provider=None,
+    web_search: WebSearchService | None = None,
+) -> FastAPI:
     data_dir = data_dir or Path(os.getenv("AGORA_DATA_DIR", ".agora"))
     workspace = workspace or Path(os.getenv("AGORA_WORKSPACE", "."))
     store = Store(data_dir / "agora.sqlite3")
     bus = EventBus(store)
     provider = provider or CodexProvider()
-    loop = AgentLoop(store, bus, WorkspaceTools(workspace), provider)
+    workspace_tools = WorkspaceTools(workspace)
+    tool_registry = ToolRegistry(workspace_tools, web_search if web_search is not None else load_web_search_service())
+    loop = AgentLoop(store, bus, tool_registry, provider)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -59,7 +68,7 @@ def create_app(data_dir: Path | None = None, workspace: Path | None = None, prov
         store.connection.close()
 
     app = FastAPI(title="Agora", lifespan=lifespan)
-    app.state.store, app.state.bus, app.state.loop = store, bus, loop
+    app.state.store, app.state.bus, app.state.loop, app.state.workspace_tools = store, bus, loop, workspace_tools
 
     @app.get("/api/status")
     async def status():
@@ -76,6 +85,7 @@ def create_app(data_dir: Path | None = None, workspace: Path | None = None, prov
             "capabilities": {
                 "channels": False, "plugins": False, "projectRuntime": False,
                 "multiPod": False, "dockerSandbox": False, "mcp": False, "cron": False,
+                "webSearch": tool_registry.web_search.available if tool_registry.web_search else False,
             },
         }
 
@@ -141,14 +151,14 @@ def create_app(data_dir: Path | None = None, workspace: Path | None = None, prov
     @app.get("/api/tools/list-dir")
     async def list_dir(path: str = ".", offset: int = 0, limit: int = 100):
         try:
-            return loop.tools.list_dir(path, offset, limit)
+            return workspace_tools.list_dir(path, offset, limit)
         except ToolError as exc:
             raise HTTPException(400, str(exc)) from exc
 
     @app.get("/api/tools/read-file")
     async def read_file(path: str, offset: int = 1, limit: int = 500):
         try:
-            return loop.tools.read_file(path, offset, limit)
+            return workspace_tools.read_file(path, offset, limit)
         except ToolError as exc:
             raise HTTPException(400, str(exc)) from exc
 

@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from agora.main import create_app
 from agora.provider import ModelResponse, ToolCall
+from agora.web_search import WebSearchService
 
 
 class FakeProvider:
@@ -83,7 +84,7 @@ def test_responses_tool_call_executes_and_returns_final_answer(tmp_path: Path):
             return ModelResponse(text="The file confirms that Agora has tool calls.")
 
     provider = ToolProvider()
-    with TestClient(create_app(tmp_path / "data", tmp_path, provider=provider)) as client:
+    with TestClient(create_app(tmp_path / "data", tmp_path, provider=provider, web_search=WebSearchService([]))) as client:
         response = client.post("/api/chat/stream", json={"agentId": "default", "sessionId": "s1", "message": "read the note"})
         assert '"type": "tool_call"' in response.text
         assert '"type": "tool_result"' in response.text
@@ -118,3 +119,37 @@ def test_tool_execution_exception_is_persisted_as_failed(tmp_path: Path):
         executions = client.app.state.store.connection.execute("SELECT state,result FROM tool_executions").fetchall()
         assert executions[0]["state"] == "failed"
         assert "UTF-8" in executions[0]["result"]
+
+
+def test_web_search_is_available_to_the_agent_only_when_configured(tmp_path: Path):
+    class StubSearch:
+        available = True
+
+        async def search(self, query, count=5):
+            assert query == "Agora agent"
+            assert count == 2
+            return {"query": query, "provider": "test", "results": [{"title": "Agora", "url": "https://example.test/agora", "snippet": "A test result."}]}
+
+    class SearchProvider:
+        model = "gpt-5.6-luna"
+        configured = True
+
+        async def complete(self, messages):
+            raise AssertionError("tool-capable provider should use complete_with_tools")
+
+        async def complete_with_tools(self, messages, tools):
+            if not any(item.get("type") == "function_call_output" for item in messages if isinstance(item, dict)):
+                assert "web_search" in {tool["name"] for tool in tools}
+                return ModelResponse(
+                    text="",
+                    tool_calls=(ToolCall("call-web", "web_search", '{"query":"Agora agent","count":2}'),),
+                    output_items=({"type": "function_call", "id": "fc-web", "call_id": "call-web", "name": "web_search", "arguments": '{"query":"Agora agent","count":2}'},),
+                )
+            assert "https://example.test/agora" in messages[-1]["output"]
+            return ModelResponse(text="I found Agora in the configured web search provider.")
+
+    with TestClient(create_app(tmp_path / "data", tmp_path, provider=SearchProvider(), web_search=StubSearch())) as client:
+        response = client.post("/api/chat/stream", json={"agentId": "default", "sessionId": "s1", "message": "search the web"})
+        assert response.status_code == 200
+        assert '"name": "web_search"' in response.text
+        assert "I found Agora" in response.text

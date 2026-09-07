@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .hermes_fuzzy_match import fuzzy_find_and_replace, format_no_match_hint, is_already_applied
-from .hermes_patch_parser import apply_v4a_operations, parse_v4a_patch
+from .hermes_patch_parser import OperationType, apply_v4a_operations, parse_v4a_patch
 
 
 class ToolError(ValueError):
@@ -38,6 +38,7 @@ class WorkspaceTools:
         self.max_lines = max_lines
         self.max_chars = max_chars
         self._patch_expected: dict[str, str] = {}
+        self._patch_in_progress = False
 
     @staticmethod
     def definitions() -> list[dict[str, Any]]:
@@ -96,9 +97,10 @@ class WorkspaceTools:
             if not path or old_string is None or new_string is None: raise ToolError("replace mode requires path, old_string, and new_string")
             file = self.resolve(path); self._require_hash(file, path, expected_sha256 if isinstance(expected_sha256, str) else None)
             before, _ = self._read_text(file)
+            if is_already_applied(before, old_string, new_string):
+                return {"mode": "replace", "files_modified": [], "replacements": 0, "already_applied": True, "verified": True}
             after, count, strategy, error = fuzzy_find_and_replace(before, old_string, new_string, replace_all)
             if error:
-                if is_already_applied(before, old_string, new_string): return {"mode": "replace", "files_modified": [], "replacements": 0, "already_applied": True, "verified": True}
                 raise ToolError(error + format_no_match_hint(error, count, old_string, before))
             self._write_atomic(file, after.encode("utf-8"))
             return {"mode": "replace", "files_modified": [file.relative_to(self.root).as_posix()], "replacements": count, "match_strategy": strategy, "diff": self._diff(path, before, after), "sha256": self._sha256(after.encode()), "verified": True}
@@ -106,11 +108,25 @@ class WorkspaceTools:
         if expected_sha256 is not None and not isinstance(expected_sha256, dict): raise ToolError("patch mode expected_sha256 must be an object mapping paths to sha256")
         operations, error = parse_v4a_patch(patch)
         if error: raise ToolError(error)
-        self._patch_expected = expected_sha256 or {}
+        expected = expected_sha256 or {}
+        # Check every existing source before hunk matching or any write. This
+        # makes a stale read a clear concurrency error, never a misleading
+        # fuzzy-match failure after another file has been changed.
+        for operation in operations:
+            source = self.resolve(operation.file_path, allow_missing=True)
+            if operation.operation is OperationType.ADD:
+                if source.exists():
+                    raise ToolError(f"{operation.file_path}: destination already exists")
+                continue
+            if source.exists():
+                self._require_hash(source, operation.file_path, expected.get(operation.file_path))
+        self._patch_expected = expected
+        self._patch_in_progress = True
         try:
             result = apply_v4a_operations(operations, self)
         finally:
             self._patch_expected = {}
+            self._patch_in_progress = False
         if getattr(result, "error", None): raise ToolError(result.error)
         return result.to_dict()
 
@@ -119,7 +135,7 @@ class WorkspaceTools:
     # adapter while preserving the parser's proven two-phase algorithm.
     def read_file_raw(self, path: str) -> _ReadResult:
         try:
-            file = self.resolve(path)
+            file = self.resolve(path, allow_missing=True)
             text, _ = self._read_text(file)
             return _ReadResult(content=text)
         except ToolError as exc:
@@ -132,12 +148,12 @@ class WorkspaceTools:
                 expected = expected_sha256 or self._patch_expected.get(path) or self._patch_expected.get(file.relative_to(self.root).as_posix())
                 self._require_hash(file, path, expected)
             self._write_atomic(file, content.encode("utf-8"))
-            if pre_content is not None or self._patch_expected:
+            if pre_content is not None or self._patch_in_progress:
                 return _WriteResult()
             raw = file.read_bytes()
             return {"path": file.relative_to(self.root).as_posix(), "sha256": self._sha256(raw), "bytes": len(raw), "verified": True}
         except (ToolError, OSError) as exc:
-            if pre_content is not None or self._patch_expected:
+            if pre_content is not None or self._patch_in_progress:
                 return _WriteResult(error=str(exc))
             raise
 

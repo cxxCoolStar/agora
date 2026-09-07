@@ -70,3 +70,79 @@ def test_search_files_supports_content_and_file_targets(tmp_path):
     assert content["results"][0]["path"] == "a.py"
     files = tools.search_files("*.py", target="files")
     assert files["results"] == ["a.py"]
+
+
+def test_hermes_v4a_patch_adds_deletes_and_moves_files(tmp_path):
+    old = tmp_path / "old.txt"
+    old.write_text("remove me\n", encoding="utf8")
+    source = tmp_path / "source.txt"
+    source.write_text("move me\n", encoding="utf8")
+    tools = WorkspaceTools(tmp_path)
+    hashes = {name: tools.read_file(name)["sha256"] for name in ("old.txt", "source.txt")}
+    patch = """*** Begin Patch
+*** Add File: created.txt
++created content
+*** Delete File: old.txt
+*** Move File: source.txt -> moved.txt
+*** End Patch"""
+
+    result = tools.patch(mode="patch", patch=patch, expected_sha256=hashes)
+
+    assert result["success"] is True
+    assert result["files_created"] == ["created.txt"]
+    assert result["files_deleted"] == ["old.txt"]
+    assert result["files_modified"] == ["source.txt -> moved.txt"]
+    assert (tmp_path / "created.txt").read_text(encoding="utf8") == "created content"
+    assert not old.exists()
+    assert not source.exists()
+    assert (tmp_path / "moved.txt").read_text(encoding="utf8") == "move me\n"
+
+
+def test_hermes_patch_rejects_missing_or_stale_expected_sha256(tmp_path):
+    file = tmp_path / "notes.txt"
+    file.write_text("before\n", encoding="utf8")
+    tools = WorkspaceTools(tmp_path)
+    patch = """*** Begin Patch
+*** Update File: notes.txt
+@@
+-before
++after
+*** End Patch"""
+    with pytest.raises(ToolError, match="expected_sha256 is missing"):
+        tools.patch(mode="patch", patch=patch)
+
+    stale = tools.read_file("notes.txt")["sha256"]
+    file.write_text("changed elsewhere\n", encoding="utf8")
+    with pytest.raises(ToolError, match="expected_sha256"):
+        tools.patch(mode="patch", patch=patch, expected_sha256={"notes.txt": stale})
+    assert file.read_text(encoding="utf8") == "changed elsewhere\n"
+
+
+def test_hermes_replace_reports_already_applied_change(tmp_path):
+    file = tmp_path / "notes.txt"
+    file.write_text("return new value\n", encoding="utf8")
+    tools = WorkspaceTools(tmp_path)
+    result = tools.patch(
+        mode="replace",
+        path="notes.txt",
+        old_string="return old value",
+        new_string="return new value",
+        expected_sha256=tools.read_file("notes.txt")["sha256"],
+    )
+    assert result["already_applied"] is True
+    assert file.read_text(encoding="utf8") == "return new value\n"
+
+
+def test_hermes_replace_uses_fuzzy_matching_for_whitespace_drift(tmp_path):
+    file = tmp_path / "notes.py"
+    file.write_text("def hello():\n    return 1\n", encoding="utf8")
+    tools = WorkspaceTools(tmp_path)
+    result = tools.patch(
+        mode="replace",
+        path="notes.py",
+        old_string="def hello():\n  return 1",
+        new_string="def hello():\n    return 2",
+        expected_sha256=tools.read_file("notes.py")["sha256"],
+    )
+    assert result["match_strategy"] != "exact"
+    assert file.read_text(encoding="utf8") == "def hello():\n    return 2\n"

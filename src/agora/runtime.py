@@ -10,7 +10,8 @@ from .events import EventBus
 from .provider import LLMProvider, ModelResponse, ProviderError, ToolCall
 from .storage import Store
 from .tool_guardrails import ToolGuardrailController, append_guardrail_guidance, guardrail_synthetic_result
-from .tools import ToolError, WorkspaceTools
+from .tool_registry import ToolRegistry
+from .tools import ToolError
 
 
 def now() -> str:
@@ -19,7 +20,7 @@ def now() -> str:
 
 class AgentLoop:
     """FIFO agent loop backed by an injected real model provider."""
-    def __init__(self, store: Store, events: EventBus, tools: WorkspaceTools, provider: LLMProvider) -> None:
+    def __init__(self, store: Store, events: EventBus, tools: ToolRegistry, provider: LLMProvider) -> None:
         self.store, self.events, self.tools, self.provider = store, events, tools, provider
         self.queues: dict[tuple[str, str], asyncio.Queue] = defaultdict(asyncio.Queue)
         self.active: dict[str, asyncio.Task] = {}
@@ -136,7 +137,7 @@ class AgentLoop:
             return result
 
         try:
-            raw_result = json.dumps(await asyncio.to_thread(self.tools.execute, call.name, arguments), ensure_ascii=False)
+            raw_result = json.dumps(await self.tools.execute(call.name, arguments), ensure_ascii=False)
             failed = False
         except Exception as exc:
             raw_result = json.dumps({"error": str(exc)}, ensure_ascii=False)

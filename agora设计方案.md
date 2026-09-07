@@ -1,6 +1,6 @@
 # Agora 设计方案（FastClaw 架构 + Hermes Agent 核心）
 
-> Agora 是独立的 Python Agent Factory。总体架构、资源模型、部署边界和前端产品形态参考同级项目 `../fastclaw`；`frontend/` 中已复制的页面直接沿用其页面和交互。Agent loop、上下文工程、工具容错和记忆/技能装配参考同级项目 `../hermes-agent`。不复制参考项目的具体实现细节。
+> Agora 是独立的 Python Agent Factory。总体架构、资源模型、部署边界和前端产品形态参考同级项目 `../fastclaw`；`frontend/` 中已复制的页面直接沿用其页面和交互。Agent loop、上下文工程、工具容错和记忆/技能装配参考同级项目 `../hermes-agent`。所有工具契约、工具 Provider 和具体工具行为只参考 Hermes；不复制参考项目的具体实现细节。
 
 ## 1. 目标与原则
 
@@ -8,8 +8,8 @@ Agora 创建、配置和运行多用户 Agent。每个 Agent 拥有独立身份�
 
 核心原则：
 
-1. FastClaw 决定“平台怎么组织”：Gateway、Agent Manager、Store、Provider、Workspace、Sandbox、Channels、Skills、Plugins。
-2. Hermes 决定“单次任务怎么思考”：Context Builder、ReAct loop、tool loop guard、compaction、retry、memory/skill 注入。
+1. FastClaw 决定“平台怎么组织”：Gateway、Agent Manager、Store、Provider、Workspace、Sandbox、Channels、Skills、Plugins，不决定工具层。
+2. Hermes 决定“单次任务怎么思考”和“工具如何工作”：Context Builder、ReAct loop、tool loop guard、compaction、retry、memory/skill 注入，以及工具契约、Provider 和容错语义。
 3. 前端沿用 FastClaw 的页面和交互，只通过 `frontend/src/lib/api.ts` 连接 Agora；HTTP/SSE 是 Agora 自己定义的前端适配契约。
 4. SQLite 优先保证单机可用，接口和表结构为 PostgreSQL、Redis、多实例演进预留边界。
 
@@ -169,7 +169,9 @@ Gateway 只做认证、授权、DTO 映射、限流和事件传输。前端继�
 
 核心表：`users`、`agents`、`providers`、`configs`、`skills`、`memories`、`memory_review_runs`、`sessions`、`session_messages`、`session_events`、`agent_runs`、`tool_executions`、`api_keys`。SQLite 是默认实现，Repository 不向上层暴露 SQL；PostgreSQL 和 Redis 只替换 adapter。
 
-Workspace 负责相对路径、symlink escape、大小/时间限制、原子写入和版本校验。`read_file` 采用 offset/limit、稳定行号、完整行字符截断、`next_offset`、sha256、敏感内容脱敏和重复读取抑制；Hermes 风格 `patch` 提供 `replace` 与 V4A 多文件 `patch` 两种模式，使用 `expected_sha256`、模糊匹配和全量预校验后提交，失败时不产生部分修改；`write_file` 仅用于完整文件重写。`exec` 只能通过 Sandbox，禁止无沙箱时静默执行宿主命令。
+Workspace 负责相对路径、symlink escape、大小/时间限制、原子写入和版本校验。工具层只采用 Hermes 的设计：`read_file` 采用 offset/limit、稳定行号、完整行字符截断、`next_offset`、sha256、敏感内容脱敏和重复读取抑制；Hermes 风格 `patch` 提供 `replace` 与 V4A 多文件 `patch` 两种模式，使用 `expected_sha256`、模糊匹配和全量预校验后提交，失败时不产生部分修改；`write_file` 仅用于完整文件重写。`web_search` 通过 Hermes 风格 `WebSearchProvider` port 选择已配置后端，统一返回标题、URL、摘要；外部搜索结果一律视为不可信内容，未配置时不向模型注册。`exec` 只能通过 Sandbox，禁止无沙箱时静默执行宿主命令。
+
+首批网页搜索后端为 Brave（`AGORA_BRAVE_SEARCH_API_KEY`）与自托管 SearxNG（`AGORA_SEARXNG_URL`）。可选的 `AGORA_WEB_SEARCH_PROVIDERS=brave,searxng` 决定显式优先级；每个已配置后端失败后依次回退，查询结果限制为 1-20 条，不向模型返回原始 HTML、凭据或未截断响应。
 
 Sandbox 由 per-user/agent/session executor pool 管理。Docker 为本地默认，E2B 为云端 adapter；hydrate/sync 负责工作区与远程沙箱同步，运行时不把沙箱实现泄漏到 Agent loop。
 
