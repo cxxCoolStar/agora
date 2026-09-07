@@ -86,7 +86,8 @@ class AgentLoop:
             messages.extend(response.output_items)
             for call in response.tool_calls:
                 tool_result = await self._execute_tool_call(run_id, agent_id, session_id, call, guardrails)
-                messages.append({"type": "function_call_output", "call_id": call.id, "output": tool_result})
+                formatter = getattr(self.provider, "tool_result_message", None)
+                messages.append(formatter(call, tool_result) if callable(formatter) else {"type": "function_call_output", "call_id": call.id, "output": tool_result})
             if rounds >= self.max_tool_rounds or guardrails.halt_decision:
                 messages.append({"role": "system", "content": "Stop calling tools. Use the available tool results to give a concise, honest final answer."})
                 response = await self._complete(messages, allow_tools=False)
